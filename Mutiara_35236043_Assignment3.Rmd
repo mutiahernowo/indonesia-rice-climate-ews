@@ -1,0 +1,877 @@
+---
+title: "Mutiara_35236043_Assignment3"
+output: html_document
+name: "Mutiara Hernowo"
+studentID: "35236043"
+date: "2025-10-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(123)
+```
+
+## Library
+Load required packages for data manipulation, modeling, and visualization
+```{r library}
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(tidyr)
+library(lubridate)
+library(tibble)
+library(randomForest)
+library(xgboost)
+```
+
+## Data Preparation
+Import and prepare raw datasets from BPS (productivity) and BMKG (climate)
+### Read file
+Import CSV files containing rice productivity and climate data
+Sources: BPS (Badan Pusat Statistik/Indonesian Bureau of Statistics) and BMKG (Indonesian Bureau of Meteorology, Climatology, and Geophysics)
+```{r data_analysis}
+# Read file paths
+climate <- read_csv("all_climate_data.csv", na = c("N/A"))
+rice <- read_csv("rice_field_2019_2024.csv")
+```
+
+### Rename column
+Standardize column names for consistency and readability
+Convert Indonesian names to English for international reproducibility
+```{r rename_column}
+# Rename column name in each data to make processing easier
+## Climate data
+colnames(climate) <- tolower(colnames(climate))
+
+## Field data
+rice <- rice %>%
+  rename(
+    `year` = Year,
+    `province` = Province,
+    `yield_area` = `Yield Area`,
+    `field_prod` = `Field Productivity`,
+    `rice_prod` = Production
+  )
+
+summary(climate)
+summary(rice)
+```
+
+## Data Preprocessing
+### Missing Value
+Identify and handle missing values using appropriate imputation strategies
+Strategy: Provincial mean imputation to preserve spatial patterns
+```{r missing_value}
+# Check Missing Value
+climate_missing <- climate %>%
+  group_by(province, year) %>%
+  summarise(
+    missing_temp_max = sum(is.na(tx)),
+    missing_temp_avg = sum(is.na(tavg)),
+    missing_rainfall = sum(is.na(rr)),
+    missing_humidity = sum(is.na(rh_avg)),
+    missing_sunshine = sum(is.na(ss)),
+    .groups = "drop"
+  )
+climate_missing
+
+# Long form
+missing_long <- climate_missing %>%
+  select(
+    province,
+    year,
+    starts_with("missing_")
+  ) %>%
+  gather(
+    key = "indicator",
+    value = "missing_value",
+    -province, -year
+  ) %>%
+  mutate(
+    indicator = recode(
+      indicator,
+      missing_temp_avg = "temp_avg",
+      missing_temp_max = "temp_max",
+      missing_rainfall = "rainfall",
+      missing_humidity = "humidity",
+      missing_sunshine = "sunshine"
+    )
+  )
+
+# Plot Missing Values
+## Plot Rainfall because Rainfall has many missing values
+missing_rainfall <- missing_long %>%
+  filter(indicator == "rainfall")
+
+ggplot(missing_rainfall, aes(x = factor(year), y = province, fill = missing_value)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = missing_value), 
+            color = "black", 
+            size = 4.5,
+            fontface = "bold") +
+  scale_fill_gradient(low = "#fff5f0", high = "#b30000",
+                      name = "Missing\nCount") +
+  labs(title = "Missing Values: Rainfall", 
+       x = "Year", 
+       y = NULL) +
+  theme_linedraw() +
+  theme(
+    axis.text.y = element_text(size = 13, hjust = 1),  # FIX OVERLAP!
+    axis.text.x = element_text(size = 13),
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+    legend.position = "right",
+    legend.title = element_text(face = "bold")
+  )
+
+## The other indicators
+missing_others <- missing_long %>%
+  filter(indicator != "rainfall")
+
+ggplot(missing_others, aes(x = factor(year), y = province, fill = missing_value)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = missing_value), 
+            color = "black", 
+            size = 2,
+            fontface = "bold") +
+  facet_wrap(~ indicator, ncol = 2) +
+  scale_fill_gradient(low = "#fff5f0", high = "#b30000",
+                      name = "Missing\nCount") +
+  labs(title = "Missing Values: Climate Indicators", 
+       x = "Year", 
+       y = NULL) +
+  theme_linedraw() +
+  theme(
+    axis.text.y = element_text(size = 8, hjust = 1),
+    axis.text.x = element_text(size = 8),
+    strip.text = element_text(face = "bold", size = 10, color = "white"),
+    strip.background = element_rect(fill = "#404040", color = "black"),
+    panel.grid = element_blank(),
+    panel.spacing = unit(1.5, "lines"),
+    plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+    legend.position = "right",
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 8, face = "bold")
+  )
+```
+
+### Data Cleaning
+The heatmaps show the missing value in used variable and I use imputation to handle this missing value.
+```{r missing_value_handling}
+# Data cleaning
+# Change `DATE` data type
+climate$date <- dmy(climate$date)
+
+# Handle missing value using imputation
+climate <- climate %>%
+  group_by(province, year) %>%
+  mutate(
+    rr = ifelse(is.na(rr), median(rr, na.rm = TRUE), rr),
+    tavg = ifelse(is.na(tavg), mean(tavg, na.rm = TRUE), tavg),
+    tx = ifelse(is.na(tx), mean(tx, na.rm = TRUE), tx),
+    rh_avg = ifelse(is.na(rh_avg), mean(rh_avg, na.rm = TRUE), rh_avg),
+    ss = ifelse(is.na(ss), mean(ss), ss)
+  ) %>%
+  ungroup()
+
+# Check missing value after cleaning
+climate_clean <- climate %>%
+  summarise(
+    na_temp = sum(is.na(tavg)),
+    na_temp_max = sum(is.na(tx)),
+    na_rainfall = sum(is.na(rr)),
+    na_humidity = sum(is.na(rh_avg)),
+    na_sunlight = sum(is.na(ss))
+  )
+
+colSums(is.na(climate_clean))
+climate
+```
+
+### Aggregation: Annual data
+Aggregate monthly/daily data to annual level for alignment with harvest cycles
+Note: If data already annual, this step validates no within-year duplicates
+```{r annual_aggregation}
+annual_climate <- climate %>%
+  group_by(province, year) %>%
+  summarise(
+    `rain_sum` = sum(rr, na.rm = TRUE),
+    `temp_max_avg` = mean(tx, na.rm = TRUE),
+    `temp_avg` = mean(tavg, na.rm = TRUE),
+    `hot_days` = sum(tx > 34, na.rm = TRUE),
+    `humid_avg` = mean(rh_avg, na.rm = TRUE),
+    `sunshine_sum` = sum(ss, na.rm = TRUE),
+    .groups = "drop"
+  )
+annual_climate
+summary(annual_climate)
+```
+
+## Exploratory Data Analysis
+### Descriptive Analysis
+Summary statistics for all variables: mean, median, sd, min, max, quartiles
+```{r descriptive_analysis}
+climate_rice <- annual_climate %>%
+  left_join(rice, by = c("province", "year"))
+
+# Descriptive Analysis
+province_summary <- climate_rice %>%
+  group_by(province) %>%
+  summarise(
+    # Rice metrics
+    avg_field_productivity = mean(field_prod, na.rm = TRUE),
+    sd_field_productivity = sd(field_prod, na.rm = TRUE),
+    avg_yield_area = mean(yield_area, na.rm = TRUE),
+    avg_rice_production = mean(rice_prod, na.rm = TRUE),
+    
+    # Climate metrics
+    avg_hot_days = mean(hot_days, na.rm = TRUE),
+    avg_temp_max = mean(temp_max_avg, na.rm = TRUE),
+    avg_rainfall = mean(rain_sum, na.rm = TRUE),
+    avg_humidity = mean(humid_avg, na.rm = TRUE),
+    
+    # Sample size
+    n_years = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(avg_field_productivity))
+
+print(province_summary)
+```
+
+### Distribution Analysis
+Visualize variable distributions to assess normality, skewness, and outliers.
+Purpose: Inform normalization decisions and validate data quality
+```{r dist_analysis_climate}
+# Rainfall
+ggplot(climate_rice, aes(x = rain_sum)) +
+  geom_histogram(bins = 20, fill = "#3498DB", color = "black", alpha = 0.7) +
+  geom_vline(aes(xintercept = mean(rain_sum, na.rm = TRUE)), 
+             color = "red", linetype = "dashed", size = 1) +
+  labs(title = "Distribution of Annual Rainfall",
+       x = "Rainfall (mm)", y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+# Temperature (Max)
+ggplot(climate_rice, aes(x = temp_max_avg)) +
+  geom_histogram(bins = 20, fill = "#E74C3C", color = "black", alpha = 0.7) +
+  geom_vline(aes(xintercept = mean(temp_max_avg, na.rm = TRUE)),
+             color = "blue", linetype = "dashed", size = 1) +
+  labs(title = "Distribution of Maximum Temperature",
+       x = "Max Temperature (°C)", y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+# Hot Days
+ggplot(climate_rice, aes(x = hot_days)) +
+  geom_histogram(bins = 20, fill = "#F39C12", color = "black", alpha = 0.7) +
+  geom_vline(aes(xintercept = mean(hot_days, na.rm = TRUE)),
+             color = "blue", linetype = "dashed", size = 1) +
+  labs(title = "Distribution of Hot Days",
+       x = "Hot Days (n)", y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+# Humidity
+ggplot(climate_rice, aes(x = humid_avg)) +
+  geom_histogram(bins = 20, fill = "#1ABC9C", color = "black", alpha = 0.7) +
+  geom_vline(aes(xintercept = mean(humid_avg, na.rm = TRUE)),
+             color = "red", linetype = "dashed", size = 1) +
+  labs(title = "Distribution of Humidity",
+       x = "Humidity (%)", y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+# Sunshine
+ggplot(climate_rice, aes(x = sunshine_sum)) +
+  geom_histogram(bins = 20, fill = "#F1C40F", color = "black", alpha = 0.7) +
+  geom_vline(aes(xintercept = mean(sunshine_sum, na.rm = TRUE)),
+             color = "red", linetype = "dashed", size = 1) +
+  labs(title = "Distribution of Sunshine Duration",
+       x = "Sunshine (hours)", y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14))
+```
+
+```{r dist_analysis_rice}
+# Yield Area
+ggplot(climate_rice, aes(x = yield_area)) +
+  geom_histogram(bins = 20, fill = "#9B59B6", color = "black", alpha = 0.7) +
+  geom_vline(aes(xintercept = mean(yield_area, na.rm = TRUE)),
+             color = "red", linetype = "dashed", size = 1) +
+  labs(title = "Distribution of Yield Area",
+       x = "Yield Area (ha)", y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+# Field Productivity
+ggplot(climate_rice, aes(x = field_prod)) +
+  geom_histogram(bins = 20, fill = "#2ECC71", color = "black", alpha = 0.7) +
+  geom_vline(aes(xintercept = mean(field_prod, na.rm = TRUE)),
+             color = "red", linetype = "dashed", size = 1) +
+  labs(title = "Distribution of Field Productivity",
+       x = "Productivity (ku/ha)", y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+# Rice Production
+ggplot(climate_rice, aes(x = rice_prod)) +
+  geom_histogram(bins = 20, fill = "#E67E22", color = "black", alpha = 0.7) +
+  geom_vline(aes(xintercept = mean(rice_prod, na.rm = TRUE)),
+             color = "red", linetype = "dashed", size = 1) +
+  labs(title = "Distribution of Rice Production",
+       x = "Production (tons)", y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+```
+### Time Series Trends
+Quantify relationships between climate variables and rice productivity
+```{r temp_max_trend}
+ggplot(annual_climate, aes(x = year, y = temp_max_avg, color = province, group = province)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 2019:2024) +
+  scale_color_brewer(palette = "Paired") +
+  labs(
+    title = "Maximum Temperature Trend (2019-2024)",
+    subtitle = "Average across all provinces",
+    x = "Year",
+    y = "Max Temperature (°C)",
+    color = "Province"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 11),
+    legend.title = element_text(face = "bold")
+  )
+```
+```{r temp_avg_trend}
+ggplot(annual_climate, aes(x = year, y = temp_avg, color = province, group = province)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 2019:2024) +
+  scale_color_brewer(palette = "Paired") +
+  labs(
+    title = "Average Temperature Trend (2019-2024)",
+    subtitle = "Average across all provinces",
+    x = "Year",
+    y = "Average Temperature (°C)",
+    color = "Province"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 11),
+    legend.title = element_text(face = "bold")
+  )
+```
+
+```{r humidity_trend}
+ggplot(annual_climate, aes(x = year, y = humid_avg, color = province, group = province)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 2019:2024) +
+  scale_color_brewer(palette = "Paired") +
+  labs(
+    title = "Average Humidity Trend (2019-2024)",
+    subtitle = "Average across all provinces",
+    x = "Year",
+    y = "Average Humidity (%)",
+    color = "Province"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 11),
+    legend.title = element_text(face = "bold")
+  )
+```
+```{r rainfall_trend}
+ggplot(annual_climate, aes(x = year, y = rain_sum, color = province, group = province)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 2019:2024) +
+  scale_color_brewer(palette = "Paired") +
+  labs(
+    title = "Rainfall Trend (2019-2024)",
+    subtitle = "Total across all provinces",
+    x = "Year",
+    y = "Total Rainfall (mm)",
+    color = "Province"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 11),
+    legend.title = element_text(face = "bold")
+  )
+```
+```{r sunshine_trend}
+ggplot(annual_climate, aes(x = year, y = sunshine_sum, color = province, group = province)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 2019:2024) +
+  scale_color_brewer(palette = "Paired") +
+  labs(
+    title = "Sunshine Trend (2019-2024)",
+    subtitle = "Total across all provinces",
+    x = "Year",
+    y = "Total Sunshine (hours)",
+    color = "Province"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 11),
+    legend.title = element_text(face = "bold")
+  )
+```
+```{r hot_days_trend}
+ggplot(annual_climate, aes(x = year, y = hot_days, color = province, group = province)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 2019:2024) +
+  scale_color_brewer(palette = "Paired") +
+  labs(
+    title = "Total Hot Days Trend (2019-2024)",
+    subtitle = "Total across all provinces",
+    x = "Year",
+    y = "Total Hot Days (days)",
+    color = "Province"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 11),
+    legend.title = element_text(face = "bold")
+  )
+```
+Based on the time trend analysis, there are some patterns in 2020-2021 where the COVID-19 occurs. The temperature, rainfall, humidty, and sunshine duration tend to going up, while the hot days going down. It can be a signal of good quality air during pandemic.
+
+### Correlation Analysis
+Method: Pearson (linear) and Spearman (non-linear) correlation coefficients
+```{r correlation_analysis}
+corr_data <- climate_rice %>%
+  select(
+    # Climate predictors
+    rain_sum, temp_max_avg, temp_avg, hot_days, humid_avg, sunshine_sum,
+    # Rice outcomes
+    yield_area, field_prod, rice_prod
+  ) %>%
+  drop_na()
+
+# Pearson Correlation
+pearson_corr <- cor(corr_data, method = "pearson")
+pearson_pval <- cor.mtest(corr_data, method = "pearson")$p
+print(round(pearson_corr, 3))
+pearson_pval
+
+# Spearman Correlation
+spearman_corr <- cor(corr_data, method = "spearman")
+spearman_pval <- cor.mtest(corr_data, method = "spearman")$p
+print(round(spearman_corr, 3))
+spearman_pval
+
+# CREATE HEATMAP
+climate_vars <- c("rain_sum", "temp_max_avg", "temp_avg", "hot_days", 
+                  "humid_avg", "sunshine_sum")
+rice_vars <- c("yield_area", "field_prod", "rice_prod")
+
+# Function to prepare data
+prep_heatmap <- function(cor_matrix, pval_matrix, method_name) {
+  cor_matrix[climate_vars, rice_vars] %>%
+    as.data.frame() %>%
+    rownames_to_column("climate") %>%
+    gather(
+      key = "rice",
+      value = "correlation",
+      -climate
+    ) %>%
+    left_join(
+      pval_matrix[climate_vars, rice_vars] %>%
+        as.data.frame() %>%
+        rownames_to_column("climate") %>%
+        gather(
+          key = "rice",
+          value = "pval",
+          -climate
+        ),
+      by = c("climate", "rice")
+    ) %>%
+    mutate(
+      method = method_name,
+      sig = case_when(
+        pval < 0.001 ~ "***",
+        pval < 0.01 ~ "**",
+        pval < 0.05 ~ "*",
+        TRUE ~ ""
+      ),
+      climate = recode(climate,
+                       rain_sum = "Rainfall",
+                       temp_max_avg = "Max Temp",
+                       temp_avg = "Mean Temp",
+                       hot_days = "Hot Days",
+                       humid_avg = "Humidity",
+                       sunshine_sum = "Sunshine"),
+      rice = recode(rice,
+                    yield_area = "Yield Area",
+                    field_prod = "Field Productivity",
+                    rice_prod = "Rice Production")
+    )
+}
+
+# Prepare both
+pearson_data <- prep_heatmap(pearson_corr, pearson_pval, "Pearson")
+spearman_data <- prep_heatmap(spearman_corr, spearman_pval, "Spearman")
+
+# Combine
+both_data <- bind_rows(pearson_data, spearman_data)
+
+# Plotting
+ggplot(both_data, aes(x = rice, y = climate, fill = correlation)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = sprintf("%.2f", correlation)), 
+            size = 3, vjust = -0.3) +
+  geom_text(aes(label = sig), size = 3, vjust = 1.5) +
+  scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B",
+                       midpoint = 0, limits = c(-1, 1)) +
+  facet_wrap(~method, ncol = 2) +
+  labs(title = "Climate-Rice Correlations: Pearson vs Spearman",
+       x = NULL, y = NULL,
+       caption = "*** p<0.001, ** p<0.01, * p<0.05",
+       fill = "Correlation") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    strip.text = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 8, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank(),
+    legend.title = element_text(face = "bold")
+  )
+```
+## Data Integration and Feature Engineering
+### Phenology data
+Creating a phenology data because the phenology-specific data (planting dates, growth stages) not available.
+Adaptation: Use annual climate aggregates as phenology-proxy indicators
+Justification: Annual metrics capture seasonal stress patterns on rice growth
+F0: rainfall, temperature, hot days frequency, humidity, sunshine
+F1: seasonal data. Indonesia has two season: wet and dry season and each of them has rain and hot days. Next, this will be assigned using F0 feature.
+F2: flowering windows month when the rice ususally enter flowering phase
+```{r features}
+features <- climate %>%
+  mutate(month = month(date)) %>%
+  group_by(province, year) %>%
+  summarise(
+    # ---- F0: annual aggregates ----
+    rain_sum     = sum(rr),
+    temp_avg    = mean(tavg, na.rm = TRUE),
+    hot_days     = sum(tx > 34, na.rm = TRUE),
+    humid_avg   = mean(rh_avg, na.rm = TRUE),
+    sunshine_sum = sum(ss, na.rm = TRUE),
+
+    # ---- F1: seasonal (wet/dry) ----
+    wet_rain = sum(rr[month %in% c(10,11,12,01,02,03)], na.rm = TRUE),
+    dry_rain = sum(rr[month %in% 04:09], na.rm = TRUE),
+    wet_hot  = sum((month %in% c(10,11,12,01,02,03)) & tx > 34, na.rm = TRUE),
+    dry_hot  = sum((month %in% 04:09) & tx > 34, na.rm = TRUE),
+
+    # ---- F2: flowering windows ----
+    hot_flowering_wet = sum((month %in% 01:03) & tx > 34, na.rm = TRUE),  # January - March: Flowering Days during Wet Season
+    hot_flowering_dry = sum((month %in% 06:08) & tx > 34, na.rm = TRUE),  # June - August Flowering Days during Dry Season
+    .groups = "drop"
+  ) %>%
+  mutate(
+    hot_days_flowering = pmax(hot_flowering_wet, hot_flowering_dry)  # use max temperature of both season
+  ) %>%
+  select(-hot_flowering_wet, -hot_flowering_dry)
+```
+
+### Join dataset
+Merge climate and productivity data by province-year keys
+Result: unified data for modelling
+```{r target_join}
+data <- field %>%
+  left_join(features, by = c("province", "year"))
+
+# write_csv(data, "climate_metadata.csv")
+data
+```
+
+### Create feature set F0, F1, F2
+Progressive feature sets to evaluate incremental value of climate variables
+- F0: base climate
+- F1: F0 + seasonal
+- F2: F1 + phenology
+```{r}
+make_features <- function(feature_data, set = c("F0", "F1", "F2")) {
+  set <- match.arg(set) # defining the set of each features
+  base <- c("rain_sum","temp_avg","hot_days","sunshine_sum","humid_avg")
+  seas <- c("wet_rain","dry_rain","wet_hot","dry_hot")
+  flow <- c("hot_days_flowering")
+  feats <- switch(set,
+                  F0 = base,
+                  F1 = c(base, seas),
+                  F2 = c(base, seas, flow))
+  feature_data %>%
+    select(province, year, field_prod, all_of(feats)) %>%
+    drop_na()
+}
+
+# Apply function
+dF0 <- make_features(data, "F0")
+dF1 <- make_features(data, "F1")
+dF2 <- make_features(data, "F2")
+
+# Extract feature names
+fF0 <- setdiff(names(dF0), c("province","year","field_prod"))
+fF1 <- setdiff(names(dF1), c("province","year","field_prod"))
+fF2 <- setdiff(names(dF2), c("province","year","field_prod"))
+
+# Verify
+cat("F0 features:", paste(fF0, collapse = ", "), "\n")
+cat("F1 features:", paste(fF1, collapse = ", "), "\n")
+cat("F2 features:", paste(fF2, collapse = ", "), "\n")
+```
+## Method and Evaluation
+### LOYO Evaluation
+Leave-One-Year-Out cross-validation: train on n-1 years, test on 1 year
+Purpose: Assess temporal generalization (mimics operational deployment)
+```{r loyo_evaluation}
+# Root Mean Absolute Percentage
+rmape <- function(y, yhat){
+  mean(abs((y - yhat) / y)) * 100
+}
+
+# Evaluation using Leave-One-Year-Out (LOYO)
+eval_loyo <- function(feature_data, feats, model = c("ols","rf","xgb")) {
+  model <- match.arg(model)
+  years <- sort(unique(data$year))               # year list for LOYO
+
+  map_df(years, function(y) {
+    tr <- feature_data %>% filter(year != y)            # train: all year without y
+    te <- feature_data %>% filter(year == y)            # test : only y
+    fml <- as.formula(paste("field_prod ~", paste(feats, collapse = " + ")))
+    
+    if (model == "ols") {
+      fit  <- lm(fml, data = tr)               # baseline linear
+      pred <- predict(fit, te)
+    } else if (model == "rf") {
+      fit  <- randomForest(fml, data = tr,     # non-linear for tabular
+                           ntree = 500,
+                           mtry  = floor(sqrt(length(feats))))
+      pred <- predict(fit, te)
+    } else {
+      Xtr <- as.matrix(tr[, feats])
+      ytr <- tr$field_prod
+      Xte <- as.matrix(te[, feats])
+      yte <- te$field_prod
+
+      dtr <- xgb.DMatrix(data = Xtr, label = ytr)
+      dte <- xgb.DMatrix(data = Xte)
+
+      fit <- xgboost(
+        data = dtr,
+        objective = "reg:squarederror",
+        nrounds = 300,
+        max_depth = 5,
+        eta = 0.1,
+        subsample = 0.8,
+        colsample_bytree = 0.8,
+        min_child_weight = 1,
+        gamma = 0,
+        verbose = 0
+      )
+      pred <- predict(fit, dte)
+    }
+
+    tibble(
+      year_left_out = y,
+      RMSE = sqrt(mean((te$field_prod - pred)^2)),   # original scale (ton/ha)
+      MAPE = rmape(te$field_prod, pred)              # error (%)
+    )
+  }) %>%
+    summarise(                                   
+      RMSE_mean = mean(RMSE, na.rm = TRUE),
+      MAPE_mean = mean(MAPE, na.rm = TRUE),
+    )
+}
+```
+
+### Model Testing
+Evaluate OLS, Random Forest, and XGBoost across F0, F1, F2 feature sets
+Objective: Empirically identify optimal model-feature combination
+```{r}
+# Testing using different models
+# OLS
+eval_f0_ols <- eval_loyo(dF0, fF0, "ols")
+eval_f1_ols <- eval_loyo(dF1, fF1, "ols")
+eval_f2_ols <- eval_loyo(dF2, fF2, "ols")
+
+# RF
+eval_f0_rf <- eval_loyo(dF0, fF0, "rf")
+eval_f1_rf <- eval_loyo(dF1, fF1, "rf")
+eval_f2_rf <- eval_loyo(dF2, fF2, "rf")
+
+# XGBoost
+eval_f0_xgb <- eval_loyo(dF0, fF0, "xgb")
+eval_f1_xgb <- eval_loyo(dF1, fF1, "xgb")
+eval_f2_xgb <- eval_loyo(dF2, fF2, "xgb")
+```
+
+### Result Comparison
+Compare all models and identify best performer
+Criteria: Lowest RMSE (primary), lowest MAPE (secondary)
+``` {r result_comparison}
+result <- tibble(
+  Model   = rep(c("OLS","RF","XGBoost"), each = 3),
+  `Feature Set` = rep(c("F0","F1","F2"), times = 3),
+  RMSE    = c(eval_f0_ols$RMSE_mean,
+              eval_f1_ols$RMSE_mean,
+              eval_f2_ols$RMSE_mean,
+              eval_f0_rf$RMSE_mean,
+              eval_f1_rf$RMSE_mean,
+              eval_f2_rf$RMSE_mean,
+              eval_f0_xgb$RMSE_mean,
+              eval_f1_xgb$RMSE_mean,
+              eval_f2_xgb$RMSE_mean),
+  MAPE    = c(eval_f0_ols$MAPE_mean,
+              eval_f1_ols$MAPE_mean,
+              eval_f2_ols$MAPE_mean,
+              eval_f0_rf$MAPE_mean,
+              eval_f1_rf$MAPE_mean,
+              eval_f2_rf$MAPE_mean,
+              eval_f0_xgb$MAPE_mean,
+              eval_f1_xgb$MAPE_mean,
+              eval_f2_xgb$MAPE_mean)
+)
+
+result_round <- result %>%
+  mutate(
+    across(c(RMSE,MAPE), ~round(.x, 2))
+  )
+result_round
+write_csv(result_round, "result.csv")
+
+# Plot the result
+plot_df <- result_round %>%
+  mutate(
+    Model = factor(Model, levels = c("OLS","RF","XGBoost")),
+    `Feature Set` = factor(`Feature Set`, levels = c("F0","F1","F2"))
+  ) %>%
+  pivot_longer(cols = c(RMSE, MAPE), names_to = "Metric", values_to = "Value")
+
+best_df <- plot_df %>%
+  group_by(Metric) %>%
+  filter(Value == min(Value)) %>%
+  ungroup()
+
+ggplot(plot_df, aes(x = `Feature Set`, y = Value, fill = Model)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.7) +
+  geom_text(aes(label = round(Value, 2)),
+            position = position_dodge(width = 0.75),
+            vjust = -0.3, size = 2.5) +
+  facet_wrap(~ Metric, scales = "free_y") +
+  labs(title = "Model Performance by Feature Set",
+       x = "Feature Set", y = "Score (lower is better)") +
+  theme_linedraw(base_size = 12) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    axis.title = element_text(face = "bold")
+    )
+```
+
+### Save Model
+Train final model on full dataset and save for operational deployment
+Model: Best performer from comparison (typically XGBoost-F2)
+```{r save_model}
+# Save best model
+if (!dir.exists("models")) dir.create("models")
+
+# Train final model on all data
+X_all <- as.matrix(dF2[, fF2])
+y_all <- dF2$field_prod
+d_all <- xgb.DMatrix(data = X_all, label = y_all)
+
+# Final XGBoost
+final_xgb <- xgboost(
+        data = d_all,
+        objective = "reg:squarederror",
+        nrounds = 300,
+        max_depth = 5,
+        eta = 0.1,
+        subsample = 0.8,
+        colsample_bytree = 0.8,
+        min_child_weight = 1,
+        gamma = 0,
+        verbose = 0
+        )
+
+xgb.save(final_xgb, "models/xgboost_f2_best.model")
+saveRDS(fF2, "models/features.rds")
+```
+
+## Early Warning System
+Operational deployment: Apply trained model to current year (2024) for risk alerts
+```{r}
+# Load model
+best_model <- xgb.load("models/xgboost_f2_best.model")
+features <- readRDS("models/features.rds")
+
+# Calculate Baseline (Historical Average)
+baseline <- dF2 %>%
+  filter(year < 2024) %>%
+  group_by(province) %>%
+  summarise(baseline_prod = mean(field_prod, na.rm = TRUE))
+
+# Using 2024 for simulation
+year_2024 <- dF2 %>%
+  filter(year == 2024) %>%
+  select(province, all_of(features))
+
+# Prediction matrix
+prediction_matrix <- as.matrix(year_2024[, features])
+prediction <- predict(best_model, prediction_matrix)
+
+# Compare and Classify Risk
+alert <- year_2024 %>%
+  mutate(
+    predicted_prod = prediction,
+    province = province
+  ) %>%
+  left_join(baseline, by = "province") %>%
+  mutate(
+    change_in_productivity = (predicted_prod - baseline_prod) / baseline_prod * 100,
+    risk = case_when(
+      change_in_productivity < -10 ~ "HIGH RISK",
+      change_in_productivity < -5 ~ "MODERATE RISK",
+      TRUE ~ "NORMAL")
+  ) %>%
+  arrange(change_in_productivity)
+
+# Show Early Warning Alert
+print(alert %>% select(province, predicted_prod, baseline_prod, change_in_productivity, risk))
+
+# Plot Alert
+ggplot(alert, aes(x = reorder(province, change_in_productivity), y = change_in_productivity, fill = risk)) +
+  geom_col() +
+  geom_hline(yintercept = -10, linetype = "dashed", color = "red") +
+  coord_flip() +
+  scale_fill_manual(values = c("HIGH RISK" = "#E74C3C", 
+                                "MODERATE RISK" = "#F39C12",
+                                "NORMAL" = "#2ECC71")) +
+  labs(title = "Early Warning: Predicted Yield Productivity Change (2024)",
+       x = NULL, y = "Change from Baseline (%)", fill = "Risk Level") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.title = element_text(face = "bold")
+  )
+```
+
+
