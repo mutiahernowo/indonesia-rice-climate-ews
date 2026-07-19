@@ -32,6 +32,7 @@ tidyverse for data wrangling
 - `scripts/` — data preparation, feature engineering, and modelling scripts
 - `report/` — final written report (Business & Data Case Study format)
 - `outputs/` — example risk-tier CSV alert report
+- `presentation/` - deck for final presentation
 
 ## Key result
 
